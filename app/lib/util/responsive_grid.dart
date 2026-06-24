@@ -29,8 +29,16 @@ class ResponsiveGrid extends StatelessWidget {
   final bool isResolvingTurn;
   final Map<String, GlobalKey> tileKeys;
 
+  /// The three currently animating tile ids.
+  ///
+  /// These ids let the grid know which concrete board tiles should be wrapped
+  /// in Transform.translate for the current manual stack animation.
   final Set<String> animatingTiles;
 
+  /// Relative translation offsets for the selected top/middle/bottom tiles.
+  ///
+  /// These are *not* absolute coordinates. Each tile is still laid out in its
+  /// normal grid slot first, and then moved relative to that slot.
   final Offset topOffset;
   final Offset midOffset;
   final Offset bottomOffset;
@@ -122,6 +130,10 @@ class ResponsiveGrid extends StatelessWidget {
     );
 
     final String id = '$col-$row';
+    // During the stack animation we keep using the same actual grid widgets,
+    // but translate only the three selected ones. This keeps the code simple:
+    // the board still owns the tiles, while LevelPageFormat only feeds in the
+    // animation offsets.
     if (id == topAnimatingId) {
       return Transform.translate(offset: topOffset, child: tile);
     }

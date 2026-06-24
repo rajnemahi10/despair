@@ -5,7 +5,6 @@ import 'package:app/util/responsive_grid.dart';
 import 'package:app/util/status_text.dart';
 import 'package:app/util/rules_tile.dart';
 import 'package:app/util/settings_tile.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide GridTile;
 
 /// Main in-game level screen for the current Despair prototype.
@@ -40,20 +39,43 @@ class LevelPageFormat extends StatefulWidget {
 
 class _LevelPageFormatState extends State<LevelPageFormat>
     with SingleTickerProviderStateMixin {
+  /// The three tile ids currently participating in the turn animation.
+  ///
+  /// We keep these ids so [ResponsiveGrid] knows which exact board tiles
+  /// should receive translation offsets during the stack / fly sequence.
   Set<String> animatingTiles = {};
 
+  /// Per-tile translation offsets used by [ResponsiveGrid].
+  ///
+  /// These are relative movement deltas from each tile's original board slot:
+  /// - [topOffset] stays zero during stack formation because the winner tile
+  ///   remains pinned in place.
+  /// - [midOffset] and [bottomOffset] animate the lower two tiles upward into
+  ///   a stack, then all three offsets animate toward the winning goal chip.
   Offset topOffset = Offset.zero;
   Offset midOffset = Offset.zero;
   Offset bottomOffset = Offset.zero;
 
+  /// One controller drives both animation phases:
+  /// 1. form the stack under the winning tile
+  /// 2. fly the already-formed stack toward the goal bar
   late final AnimationController _stackController;
   late Animation<Offset> _midTween;
   late Animation<Offset> _bottomTween;
 
+  late Animation<Offset> _topFlyTween;
+  late Animation<Offset> _midFlyTween;
+  late Animation<Offset> _bottomFlyTween;
+
   String? topAnimatingId;
   String? midAnimatingId;
   String? bottomAnimatingId;
+  PendingTurn? _resolvingTurn;
 
+  /// Returns the on-screen centre point of a widget identified by [key].
+  ///
+  /// The animation math uses widget centres rather than top-left corners
+  /// because centre-to-centre movement is easier to reason about.
   Offset getPosition(GlobalKey key) {
     final RenderBox box = key.currentContext!.findRenderObject() as RenderBox;
     final Size size = box.size;
@@ -92,21 +114,53 @@ class _LevelPageFormatState extends State<LevelPageFormat>
 
     _stackController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1400),
+      duration: const Duration(milliseconds: 2200),
     );
 
+    // As the controller ticks, choose which phase's offsets should drive the
+    // three animated tiles.
+    //
+    // 0.0 -> 0.8 : stacking phase
+    // 0.8 -> 1.0 : whole stack flies to the goal while keeping the same
+    //              relative spacing between the three tiles.
     _stackController.addListener(() {
       setState(() {
-        midOffset = _midTween.value;
-        bottomOffset = _bottomTween.value;
+        final double t = _stackController.value;
+
+        if (t < 0.8) {
+          topOffset = Offset.zero;
+          midOffset = _midTween.value;
+          bottomOffset = _bottomTween.value;
+        } else {
+          topOffset = _topFlyTween.value;
+          midOffset = _midFlyTween.value;
+          bottomOffset = _bottomFlyTween.value;
+        }
       });
     });
 
-    @override
-    void dispose() {
-      _stackController.dispose();
-      super.dispose();
-    }
+    // Once the full animation completes, resolve the saved turn, remove the
+    // picked tiles from the board, and clear the temporary animation state.
+    _stackController.addStatusListener((AnimationStatus status) {
+      if (status == AnimationStatus.completed && _resolvingTurn != null) {
+        final PendingTurn completedTurn = _resolvingTurn!;
+        _resolvingTurn = null;
+        animatingTiles = {};
+        topAnimatingId = null;
+        midAnimatingId = null;
+        bottomAnimatingId = null;
+        topOffset = Offset.zero;
+        midOffset = Offset.zero;
+        bottomOffset = Offset.zero;
+        _applyResolvedTurn(completedTurn);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _stackController.dispose();
+    super.dispose();
   }
 
   /// Resolves a completed turn and updates game state immediately.
@@ -152,59 +206,120 @@ class _LevelPageFormatState extends State<LevelPageFormat>
     });
 
     if (nextPendingTurn.picks.length == kGameColors.length) {
-      final picks = nextPendingTurn.picks;
-
-      topAnimatingId = tileId(picks[0].col, picks[0].row);
-
-      midAnimatingId = tileId(picks[1].col, picks[1].row);
-
-      bottomAnimatingId = tileId(picks[2].col, picks[2].row);
-
-      animatingTiles = {topAnimatingId!, midAnimatingId!, bottomAnimatingId!};
-
-      setState(() {
-        topOffset = Offset.zero;
-        midOffset = const Offset(0, 20);
-        bottomOffset = const Offset(0, 40);
-        _isResolvingTurn = true;
-        _stackController.forward(from: 0);
-      });
-
-      final GlobalKey topKey = tileKeys[tileId(picks[0].col, picks[0].row)]!;
-
-      final GlobalKey midKey = tileKeys[tileId(picks[1].col, picks[1].row)]!;
-
-      final GlobalKey bottomKey = tileKeys[tileId(picks[2].col, picks[2].row)]!;
+      // At the moment the 3rd color is picked we freeze this exact turn so the
+      // board can stay visually stable while the animation runs. The turn is
+      // applied only after the controller finishes.
+      //
+      // Important rule:
+      // The tile at the top of the animated stack is NOT "the first tile the
+      // user tapped". It must always be the actual winning tile resolved from
+      // the active column.
+      final List<PickedTile> picks = nextPendingTurn.picks;
+      _resolvingTurn = nextPendingTurn;
 
       final String winnerColor = resolveWinnerColor(
         _gameState.board,
         nextPendingTurn,
       );
+      final PickedTile topAnimatingTile = picks.firstWhere(
+        (PickedTile tile) =>
+            tile.col == nextPendingTurn.primaryCol && tile.color == winnerColor,
+      );
 
-      final GlobalKey goalKey = goalKeys[winnerColor]!;
+      // The remaining two picked tiles sit under the winner in the visual
+      // stack. We sort them by row so the one that was already visually higher
+      // on the board ends up closer to the winner in the stacked pile.
+      final List<PickedTile> lowerStackTiles =
+          picks
+              .where((PickedTile tile) => tile.key != topAnimatingTile.key)
+              .toList()
+            ..sort((PickedTile a, PickedTile b) => b.row.compareTo(a.row));
+
+      topAnimatingId = tileId(topAnimatingTile.col, topAnimatingTile.row);
+
+      midAnimatingId = tileId(lowerStackTiles[0].col, lowerStackTiles[0].row);
+
+      bottomAnimatingId = tileId(
+        lowerStackTiles[1].col,
+        lowerStackTiles[1].row,
+      );
+
+      animatingTiles = {topAnimatingId!, midAnimatingId!, bottomAnimatingId!};
+
+      final GlobalKey topKey =
+          tileKeys[tileId(topAnimatingTile.col, topAnimatingTile.row)]!;
+
+      final GlobalKey midKey =
+          tileKeys[tileId(lowerStackTiles[0].col, lowerStackTiles[0].row)]!;
+
+      final GlobalKey bottomKey =
+          tileKeys[tileId(lowerStackTiles[1].col, lowerStackTiles[1].row)]!;
 
       final Offset topPos = getPosition(topKey);
       final Offset midPos = getPosition(midKey);
       final Offset bottomPos = getPosition(bottomKey);
+
+      final GlobalKey goalKey = goalKeys[winnerColor]!;
       final Offset goalPos = getPosition(goalKey);
 
+      // Fixed overlap spacing for the current stack prototype.
+      //
+      // This says "the middle tile should peek out 18 px under the top tile,
+      // and the bottom tile should peek out another 18 px under the middle."
       const double stackPeek = 18;
+      final Offset topTarget = topPos;
       final Offset middleTarget = Offset(topPos.dx, topPos.dy + stackPeek);
       final Offset bottomTarget = Offset(
         topPos.dx,
         topPos.dy + (stackPeek * 2),
       );
 
+      // Fly targets must preserve the exact stack shape at the goal.
+      //
+      // So:
+      // - the winner flies to the goal chip centre
+      // - the middle tile flies to 18 px below that centre
+      // - the bottom tile flies to 36 px below that centre
+      final Offset goalTopTarget = goalPos;
+      final Offset goalMiddleTarget = Offset(
+        goalPos.dx,
+        goalPos.dy + stackPeek,
+      );
+      final Offset goalBottomTarget = Offset(
+        goalPos.dx,
+        goalPos.dy + (stackPeek * 2),
+      );
+
+      final Offset topFlyDelta = Offset(
+        goalTopTarget.dx - topTarget.dx,
+        goalTopTarget.dy - topTarget.dy,
+      );
+
+      final Offset middleFlyDelta = Offset(
+        goalMiddleTarget.dx - middleTarget.dx,
+        goalMiddleTarget.dy - middleTarget.dy,
+      );
+
+      final Offset bottomFlyDelta = Offset(
+        goalBottomTarget.dx - bottomTarget.dx,
+        goalBottomTarget.dy - bottomTarget.dy,
+      );
+
+      // During the first phase, the middle tile moves from its own position to
+      // just below the top tile.
       final Offset middleDelta = Offset(
         middleTarget.dx - midPos.dx,
         middleTarget.dy - midPos.dy,
       );
 
+      // During the first phase, the bottom tile moves from its own position to
+      // just below the middle tile.
       final Offset bottomDelta = Offset(
         bottomTarget.dx - bottomPos.dx,
         bottomTarget.dy - bottomPos.dy,
       );
 
+      // First phase: middle tile stacks under the winner.
       _midTween = Tween<Offset>(begin: Offset.zero, end: middleDelta).animate(
         CurvedAnimation(
           parent: _stackController,
@@ -212,6 +327,8 @@ class _LevelPageFormatState extends State<LevelPageFormat>
         ),
       );
 
+      // First phase: bottom tile stacks slightly after the middle tile so the
+      // assembly reads clearly instead of both lower tiles moving together.
       _bottomTween = Tween<Offset>(begin: Offset.zero, end: bottomDelta)
           .animate(
             CurvedAnimation(
@@ -219,6 +336,54 @@ class _LevelPageFormatState extends State<LevelPageFormat>
               curve: const Interval(0.25, 0.8, curve: Curves.easeInOut),
             ),
           );
+
+      // Second phase: once the stack is formed, the winner flies upward toward
+      // the goal chip. Because its stack position equals its board position,
+      // this fly tween starts from Offset.zero.
+      _topFlyTween = Tween<Offset>(begin: Offset.zero, end: topFlyDelta)
+          .animate(
+            CurvedAnimation(
+              parent: _stackController,
+              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+            ),
+          );
+
+      // Second phase: the middle tile starts flying from its already-stacked
+      // offset [middleDelta] and keeps that same 18 px spacing below the top
+      // tile all the way to the goal.
+      _midFlyTween =
+          Tween<Offset>(
+            begin: middleDelta,
+            end: middleDelta + middleFlyDelta,
+          ).animate(
+            CurvedAnimation(
+              parent: _stackController,
+              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+            ),
+          );
+
+      // Second phase: same idea for the bottom tile, but 36 px below the top.
+      _bottomFlyTween =
+          Tween<Offset>(
+            begin: bottomDelta,
+            end: bottomDelta + bottomFlyDelta,
+          ).animate(
+            CurvedAnimation(
+              parent: _stackController,
+              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+            ),
+          );
+
+      setState(() {
+        topOffset = Offset.zero;
+        midOffset = Offset.zero;
+        bottomOffset = Offset.zero;
+        _isResolvingTurn = true;
+      });
+
+      // Start the controller only after every tween has been created. That way
+      // the first animation tick always has valid values for every tile.
+      _stackController.forward(from: 0);
     }
   }
 

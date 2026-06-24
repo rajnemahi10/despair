@@ -47,6 +47,9 @@ class GridTile extends StatelessWidget {
       child: AnimatedScale(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOutCubic,
+        // Selected tiles grow slightly so the player gets immediate feedback
+        // about which 3 colors are currently locked into the turn. The later
+        // stack animation is built on top of this enlarged visual state.
         scale: isSelected ? selectedTileScale : 1.0,
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 180),
