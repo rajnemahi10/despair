@@ -6,7 +6,12 @@ import 'package:flutter/material.dart';
 /// `games/despair/game_logic.dart`. The text below mirrors the current rule set
 /// the player is expected to learn from the UI.
 class RulesTile extends StatelessWidget {
-  const RulesTile({super.key});
+  const RulesTile({super.key, required this.hasTrumpColumn});
+
+  /// Decides whether the trump-specific rule should be shown in the popup.
+  ///
+  /// We keep this dynamic so early levels without trump stay simpler to learn.
+  final bool hasTrumpColumn;
 
   /// Human-readable rule summary shown to the player.
   ///
@@ -18,17 +23,37 @@ class RulesTile extends StatelessWidget {
   /// 4. If a needed color exists in the primary column, it must be picked there.
   /// 5. If a needed color does not exist in the primary column, it may be taken
   ///    from any other column.
-  /// 6. The topmost picked color in the primary column wins the turn.
-  /// 7. The winning color reduces its goal count by 1 and must start the next
+  /// 6. If that missing color is picked from the trump column, the trump column
+  ///    can override the active column and its topmost picked tile wins.
+  /// 7. In the animation, the winning tile always stays on top and the other
+  ///    two selected tiles stack under it in selection order.
+  /// 8. The winning color reduces its goal count by 1 and must start the next
   ///    turn if the game continues.
-  static const List<String> rules = <String>[
-    'Aim of the game is to reach the target exactly.',
-    '3 colours make a set: one red, one blue, and one yellow.',
-    'The first tile you pick decides the active column for that turn.',
-    'If a needed colour exists in the active column, you must pick it there.',
-    'If a needed colour does not exist in the active column, you may pick it from any other column.',
-    'The topmost picked colour in the active column wins the point and starts the next turn.',
-  ];
+  List<String> get rules {
+    // Start with the rules that every level shares.
+    final List<String> baseRules = <String>[
+      'Aim of the game is to reach the target exactly.',
+      '3 colours make a set: one red, one blue, and one yellow.',
+      'The first tile you pick decides the active column for that turn.',
+      'If a needed colour exists in the active column, you must pick it there.',
+      'If a needed colour does not exist in the active column, you may pick it from any other column.',
+    ];
+
+    if (hasTrumpColumn) {
+      // Only trump levels need this extra explanation.
+      baseRules.add(
+        'If a missing active-column colour is picked from the trump column, the topmost picked colour in the trump column wins instead.',
+      );
+    }
+
+    // End with the rules that always happen after a winner is decided.
+    baseRules.addAll(<String>[
+      'In the animation, the winning tile stays on top and the other two stack below it in the order you selected them.',
+      'The winning colour reduces its goal count by 1 and starts the next turn.',
+    ]);
+
+    return baseRules;
+  }
 
   @override
   Widget build(BuildContext context) {

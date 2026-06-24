@@ -24,6 +24,7 @@ class LevelPageFormat extends StatefulWidget {
     required this.id,
     required this.hasHint,
     required this.isTut,
+    this.trumpCol,
   });
 
   final List<List<String>> board;
@@ -32,6 +33,8 @@ class LevelPageFormat extends StatefulWidget {
   final int id;
   final bool hasHint;
   final bool isTut;
+  /// Optional 1-based trump column coming from the level data.
+  final int? trumpCol;
 
   @override
   State<LevelPageFormat> createState() => _LevelPageFormatState();
@@ -70,6 +73,11 @@ class _LevelPageFormatState extends State<LevelPageFormat>
   String? topAnimatingId;
   String? midAnimatingId;
   String? bottomAnimatingId;
+
+  /// We temporarily store the completed turn here while its animation plays.
+  ///
+  /// The board should not be mutated immediately after the 3rd pick, otherwise
+  /// the tiles would disappear before the player sees the stack and fly motion.
   PendingTurn? _resolvingTurn;
 
   /// Returns the on-screen centre point of a widget identified by [key].
@@ -87,8 +95,17 @@ class _LevelPageFormatState extends State<LevelPageFormat>
     'blue': GlobalKey(),
     'yellow': GlobalKey(),
   };
+
+  /// Stable helper for producing a unique tile id from its board location.
+  ///
+  /// The same string format is reused by:
+  /// - the tile key map
+  /// - the selected / animating tile sets
+  /// - the grid when it decides which widgets should move
   String tileId(int col, int row) => '$col-$row';
 
+  /// Each visible board tile gets a [GlobalKey] so we can measure where it is
+  /// on screen right before animation starts.
   final Map<String, GlobalKey> tileKeys = {};
 
   late GameViewState _gameState;
@@ -98,6 +115,9 @@ class _LevelPageFormatState extends State<LevelPageFormat>
   void initState() {
     super.initState();
 
+    // Pre-build keys for every initial tile position. Later, when tiles are
+    // removed after a turn, the rebuilt board will reuse the remaining keys
+    // only for tiles that still exist in those positions.
     for (int col = 0; col < widget.board.length; col++) {
       for (int row = 0; row < widget.board[col].length; row++) {
         tileKeys[tileId(col, row)] = GlobalKey();
@@ -174,6 +194,7 @@ class _LevelPageFormatState extends State<LevelPageFormat>
         status: _gameState.status,
         winnerColor: _gameState.winnerColor,
       ),
+      trumpCol: widget.trumpCol,
     );
     setState(() {
       _gameState = GameViewState(
@@ -188,6 +209,13 @@ class _LevelPageFormatState extends State<LevelPageFormat>
     });
   }
 
+  /// Handles a player's tap on one board tile.
+  ///
+  /// High-level flow:
+  /// 1. ask the rule engine whether this tap is legal
+  /// 2. update temporary selection state
+  /// 3. if this was the 3rd pick, build the stack/fly animation
+  /// 4. once animation completes, actually remove the tiles and update score
   void _onTileTap(int col, int row) {
     if (_isResolvingTurn) return;
 
@@ -217,23 +245,22 @@ class _LevelPageFormatState extends State<LevelPageFormat>
       final List<PickedTile> picks = nextPendingTurn.picks;
       _resolvingTurn = nextPendingTurn;
 
-      final String winnerColor = resolveWinnerColor(
+      final PickedTile topAnimatingTile = resolveWinningTile(
         _gameState.board,
         nextPendingTurn,
+        trumpCol: widget.trumpCol,
       );
-      final PickedTile topAnimatingTile = picks.firstWhere(
-        (PickedTile tile) =>
-            tile.col == nextPendingTurn.primaryCol && tile.color == winnerColor,
-      );
+      final String winnerColor = topAnimatingTile.color;
 
-      // The remaining two picked tiles sit under the winner in the visual
-      // stack. We sort them by row so the one that was already visually higher
-      // on the board ends up closer to the winner in the stacked pile.
-      final List<PickedTile> lowerStackTiles =
-          picks
-              .where((PickedTile tile) => tile.key != topAnimatingTile.key)
-              .toList()
-            ..sort((PickedTile a, PickedTile b) => b.row.compareTo(a.row));
+      // The remaining two picked tiles always stack under the winner in the
+      // same order the player selected them.
+      //
+      // That rule is especially important when a trump-column tile wins from a
+      // different column: the winner must still stay on top, and the other two
+      // tiles should preserve the player's pick sequence underneath it.
+      final List<PickedTile> lowerStackTiles = picks
+          .where((PickedTile tile) => tile.key != topAnimatingTile.key)
+          .toList();
 
       topAnimatingId = tileId(topAnimatingTile.col, topAnimatingTile.row);
 
@@ -295,6 +322,9 @@ class _LevelPageFormatState extends State<LevelPageFormat>
         goalTopTarget.dy - topTarget.dy,
       );
 
+      // These fly deltas are measured from the tiles' stacked positions, not
+      // from their original board positions. That is what keeps the stack shape
+      // intact while it travels to the goal bar.
       final Offset middleFlyDelta = Offset(
         goalMiddleTarget.dx - middleTarget.dx,
         goalMiddleTarget.dy - middleTarget.dy,
@@ -406,7 +436,9 @@ class _LevelPageFormatState extends State<LevelPageFormat>
             onPressed: () {
               showDialog<void>(
                 context: context,
-                builder: (BuildContext context) => const RulesTile(),
+                builder: (BuildContext context) => RulesTile(
+                  hasTrumpColumn: widget.trumpCol != null,
+                ),
               );
             },
             icon: const Icon(Icons.question_mark_outlined, color: Colors.black),
@@ -447,6 +479,7 @@ class _LevelPageFormatState extends State<LevelPageFormat>
                   child: ResponsiveGrid(
                     gameState: _gameState,
                     isResolvingTurn: _isResolvingTurn,
+                    trumpCol: widget.trumpCol,
                     onTileTap: _onTileTap,
                     tileKeys: tileKeys,
                     animatingTiles: animatingTiles,

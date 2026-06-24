@@ -26,8 +26,8 @@ class PickedTile {
 /// In-progress turn state.
 ///
 /// [primaryCol] is locked by the first tile the player selects for that turn.
-/// The winner is always resolved from the topmost matching color in this
-/// primary column.
+/// That column stays active for the turn, but a trump column may override the
+/// winner when a missing active-column color is picked from the trump column.
 class PendingTurn {
   const PendingTurn({required this.primaryCol, required this.picks});
 
@@ -83,12 +83,22 @@ class TurnResult {
 }
 
 /// Fixed game color order used everywhere in the current UI and rule system.
+///
+/// Keeping one shared order prevents subtle bugs such as:
+/// - the UI showing colors in one order
+/// - the rules checking a different order
+/// - the goal bar expecting a third order
 const List<String> kGameColors = <String>['red', 'blue', 'yellow'];
 
+/// Creates a deep-enough copy of the board for gameplay updates.
+///
+/// Each column is copied into a new list so removing tiles from the next board
+/// does not mutate the original board that widgets may still be reading.
 List<List<String>> cloneBoard(List<List<String>> board) {
   return board.map((List<String> column) => List<String>.from(column)).toList();
 }
 
+/// Copies the current goal map before score changes are applied.
 Map<String, int> cloneGoal(Map<String, int> goal) {
   return <String, int>{
     for (final MapEntry<String, int> entry in goal.entries)
@@ -96,10 +106,15 @@ Map<String, int> cloneGoal(Map<String, int> goal) {
   };
 }
 
+/// Returns true if at least one copy of [color] exists anywhere on the board.
 bool colorExistsAnywhere(List<List<String>> board, String color) {
   return board.any((List<String> column) => column.contains(color));
 }
 
+/// Returns true if [color] exists in a specific column.
+///
+/// The bounds check is kept here so callers can stay simple and do not have to
+/// repeatedly guard the index before asking this question.
 bool colorExistsInColumn(List<List<String>> board, int col, String color) {
   if (col < 0 || col >= board.length) return false;
   return board[col].contains(color);
@@ -124,6 +139,11 @@ bool hasAnyLegalTurn(List<List<String>> board, String? requiredStartColor) {
       ? kGameColors
       : <String>[requiredStartColor];
 
+  // We simulate only the *existence* of a valid turn here.
+  //
+  // We are not building the actual turn step by step. We are just checking:
+  // "Is there any possible starting column + starting color combination that
+  // could still legally collect all 3 colors?"
   for (int primaryCol = 0; primaryCol < board.length; primaryCol += 1) {
     final List<String> column = board[primaryCol];
     for (final String startColor in allowedStartColors) {
@@ -216,6 +236,7 @@ PendingTurn? tryPickTile(GameViewState state, int col, int row) {
 
   final PendingTurn pendingTurn = state.pendingTurn;
   return PendingTurn(
+    // The first legal pick locks the active column for the rest of the turn.
     primaryCol: pendingTurn.primaryCol ?? col,
     picks: <PickedTile>[
       ...pendingTurn.picks,
@@ -224,41 +245,100 @@ PendingTurn? tryPickTile(GameViewState state, int col, int row) {
   );
 }
 
-/// Resolves the turn winner from the primary column only.
+/// Convenience helper used when callers only need the winner's color.
+String resolveWinnerColor(
+  List<List<String>> board,
+  PendingTurn pendingTurn, {
+  int? trumpCol,
+}) {
+  return resolveWinningTile(board, pendingTurn, trumpCol: trumpCol).color;
+}
+
+/// Resolves the exact tile that wins the completed turn.
 ///
-/// We walk from top -> bottom inside the primary column and return the first
-/// picked color we encounter. That is the "topmost picked color in the primary
-/// column" rule the user specified.
-String resolveWinnerColor(List<List<String>> board, PendingTurn pendingTurn) {
+/// Why this helper matters:
+/// - the scoring logic only needs the winner color
+/// - the animation logic needs the exact tile location that stays pinned on
+///   top while the other two tiles stack underneath it
+///
+/// Trump rule enforced here:
+/// - the first pick still defines the active column
+/// - if a picked color is missing from the active column *and* that picked
+///   tile came from the trump column, then the trump column overrides the
+///   active column for winner resolution
+/// - when trump overrides, the topmost picked tile in the trump column wins
+PickedTile resolveWinningTile(
+  List<List<String>> board,
+  PendingTurn pendingTurn, {
+  int? trumpCol,
+}) {
   final int primaryCol = pendingTurn.primaryCol!;
-  final List<String> primaryColumn = board[primaryCol];
+  // Level data stores trump as 1-based because that is friendlier for humans.
+  // The board lists use 0-based indexes because that is what Dart lists use.
+  final int? trumpIndex = trumpCol == null ? null : trumpCol - 1;
   final Set<String> pickedColors = pendingTurn.picks
       .map((PickedTile tile) => tile.color)
       .toSet();
 
-  for (int row = primaryColumn.length - 1; row >= 0; row -= 1) {
-    final String color = primaryColumn[row];
-    if (pickedColors.contains(color)) {
-      return color;
+  bool useTrumpWinner = false;
+  if (trumpIndex != null &&
+      trumpIndex >= 0 &&
+      trumpIndex < board.length &&
+      trumpIndex != primaryCol) {
+    for (final PickedTile tile in pendingTurn.picks) {
+      final bool missingFromPrimary = !colorExistsInColumn(
+        board,
+        primaryCol,
+        tile.color,
+      );
+      // Trump only activates when both conditions are true:
+      // 1. that color does not exist in the active column
+      // 2. the player chose that missing color from the trump column
+      if (missingFromPrimary && tile.col == trumpIndex) {
+        useTrumpWinner = true;
+        break;
+      }
+    }
+  }
+
+  final int winnerColumn = useTrumpWinner ? trumpIndex! : primaryCol;
+  final List<String> winnerColumnTiles = board[winnerColumn];
+
+  // Walk from top -> bottom because the topmost picked tile in the winner
+  // column is the one that wins the set.
+  for (int row = winnerColumnTiles.length - 1; row >= 0; row -= 1) {
+    final String color = winnerColumnTiles[row];
+    if (!pickedColors.contains(color)) continue;
+
+    // We return the exact PickedTile object so the animation layer knows the
+    // winner's real board coordinates, not just its color.
+    for (final PickedTile tile in pendingTurn.picks) {
+      if (tile.col == winnerColumn && tile.row == row && tile.color == color) {
+        return tile;
+      }
     }
   }
 
   throw StateError(
-    'Could not resolve winner color for primary column $primaryCol',
+    'Could not resolve winning tile for primary column $primaryCol and trump column $trumpCol',
   );
 }
 
 /// Applies one completed 3-color turn to the game state.
 ///
 /// Steps:
-/// 1. resolve the winning color from the primary column
+/// 1. resolve the winning color from the active column or trump column
 /// 2. subtract 1 from that goal color
 /// 3. remove all 3 picked tiles from the board
 /// 4. determine whether the game is now won, lost, or still playable
 /// 5. if still playable, force the next turn to start with the winner color
-TurnResult resolveTurn(GameViewState state) {
+TurnResult resolveTurn(GameViewState state, {int? trumpCol}) {
   final PendingTurn pendingTurn = state.pendingTurn;
-  final String winnerColor = resolveWinnerColor(state.board, pendingTurn);
+  final String winnerColor = resolveWinnerColor(
+    state.board,
+    pendingTurn,
+    trumpCol: trumpCol,
+  );
   final Map<String, int> nextGoal = cloneGoal(state.goal);
   nextGoal[winnerColor] = (nextGoal[winnerColor] ?? 0) - 1;
 
