@@ -33,6 +33,7 @@ class LevelPageFormat extends StatefulWidget {
   final int id;
   final bool hasHint;
   final bool isTut;
+
   /// Optional 1-based trump column coming from the level data.
   final int? trumpCol;
 
@@ -41,7 +42,7 @@ class LevelPageFormat extends StatefulWidget {
 }
 
 class _LevelPageFormatState extends State<LevelPageFormat>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   /// The three tile ids currently participating in the turn animation.
   ///
   /// We keep these ids so [ResponsiveGrid] knows which exact board tiles
@@ -59,13 +60,21 @@ class _LevelPageFormatState extends State<LevelPageFormat>
   Offset midOffset = Offset.zero;
   Offset bottomOffset = Offset.zero;
 
-  /// One controller drives both animation phases:
-  /// 1. form the stack under the winning tile
-  /// 2. fly the already-formed stack toward the goal bar
-  late final AnimationController _stackController;
-  late Animation<Offset> _midTween;
-  late Animation<Offset> _bottomTween;
+  /// The animation is now split into three explicit phases.
+  ///
+  /// This is easier for a beginner to follow than one long controller with
+  /// intervals:
+  /// 1. middle tile stacks under the winner
+  /// 2. bottom tile stacks under the middle tile
+  /// 3. each tile in the finished stack flies to the goal bar
+  late final AnimationController _middleStackController;
+  late final AnimationController _bottomStackController;
+  late final AnimationController _topFlyController;
+  late final AnimationController _midFlyController;
+  late final AnimationController _bottomFlyController;
 
+  late Animation<Offset> _middleStackTween;
+  late Animation<Offset> _bottomStackTween;
   late Animation<Offset> _topFlyTween;
   late Animation<Offset> _midFlyTween;
   late Animation<Offset> _bottomFlyTween;
@@ -110,6 +119,23 @@ class _LevelPageFormatState extends State<LevelPageFormat>
 
   late GameViewState _gameState;
   bool _isResolvingTurn = false;
+  int _completedFlyAnimations = 0;
+  bool _isMiddleStackPhaseActive = false;
+  bool _isBottomStackPhaseActive = false;
+  bool _isFlyPhaseActive = false;
+
+  void _clearAnimationState() {
+    animatingTiles = {};
+    topAnimatingId = null;
+    midAnimatingId = null;
+    bottomAnimatingId = null;
+    topOffset = Offset.zero;
+    midOffset = Offset.zero;
+    bottomOffset = Offset.zero;
+    _isMiddleStackPhaseActive = false;
+    _isBottomStackPhaseActive = false;
+    _isFlyPhaseActive = false;
+  }
 
   @override
   void initState() {
@@ -132,54 +158,120 @@ class _LevelPageFormatState extends State<LevelPageFormat>
       winnerColor: null,
     );
 
-    _stackController = AnimationController(
+    _middleStackController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 2200),
+      duration: const Duration(milliseconds: 900),
     );
 
-    // As the controller ticks, choose which phase's offsets should drive the
-    // three animated tiles.
-    //
-    // 0.0 -> 0.8 : stacking phase
-    // 0.8 -> 1.0 : whole stack flies to the goal while keeping the same
-    //              relative spacing between the three tiles.
-    _stackController.addListener(() {
-      setState(() {
-        final double t = _stackController.value;
+    _bottomStackController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
 
-        if (t < 0.8) {
-          topOffset = Offset.zero;
-          midOffset = _midTween.value;
-          bottomOffset = _bottomTween.value;
-        } else {
-          topOffset = _topFlyTween.value;
-          midOffset = _midFlyTween.value;
-          bottomOffset = _bottomFlyTween.value;
-        }
+    _topFlyController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    _midFlyController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    _bottomFlyController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    // Phase 1: only the middle tile moves.
+    _middleStackController.addListener(() {
+      if (!_isMiddleStackPhaseActive) return;
+      setState(() {
+        midOffset = _middleStackTween.value;
       });
     });
 
-    // Once the full animation completes, resolve the saved turn, remove the
-    // picked tiles from the board, and clear the temporary animation state.
-    _stackController.addStatusListener((AnimationStatus status) {
-      if (status == AnimationStatus.completed && _resolvingTurn != null) {
-        final PendingTurn completedTurn = _resolvingTurn!;
-        _resolvingTurn = null;
-        animatingTiles = {};
-        topAnimatingId = null;
-        midAnimatingId = null;
-        bottomAnimatingId = null;
-        topOffset = Offset.zero;
-        midOffset = Offset.zero;
-        bottomOffset = Offset.zero;
-        _applyResolvedTurn(completedTurn);
+    // When the middle tile has finished stacking, start the bottom-tile stack.
+    _middleStackController.addStatusListener((AnimationStatus status) {
+      if (status == AnimationStatus.completed) {
+        _isMiddleStackPhaseActive = false;
+        _isBottomStackPhaseActive = true;
+        _bottomStackController.forward(from: 0);
       }
     });
+
+    // Phase 2: the bottom tile moves after the middle tile has already reached
+    // its stacked location.
+    _bottomStackController.addListener(() {
+      if (!_isBottomStackPhaseActive) return;
+      setState(() {
+        bottomOffset = _bottomStackTween.value;
+      });
+    });
+
+    // Once the full three-tile stack exists, begin the upward flight.
+    _bottomStackController.addStatusListener((AnimationStatus status) {
+      if (status == AnimationStatus.completed) {
+        _isBottomStackPhaseActive = false;
+        _isFlyPhaseActive = true;
+        _completedFlyAnimations = 0;
+        _topFlyController.forward(from: 0);
+        _midFlyController.forward(from: 0);
+        _bottomFlyController.forward(from: 0);
+      }
+    });
+
+    // Phase 3a: the winner tile flies to the goal.
+    _topFlyController.addListener(() {
+      if (!_isFlyPhaseActive) return;
+      setState(() {
+        topOffset = _topFlyTween.value;
+      });
+    });
+
+    // Phase 3b: the middle tile flies while preserving its stacked spacing.
+    _midFlyController.addListener(() {
+      if (!_isFlyPhaseActive) return;
+      setState(() {
+        midOffset = _midFlyTween.value;
+      });
+    });
+
+    // Phase 3c: the bottom tile flies while preserving its stacked spacing.
+    _bottomFlyController.addListener(() {
+      if (!_isFlyPhaseActive) return;
+      setState(() {
+        bottomOffset = _bottomFlyTween.value;
+      });
+    });
+
+    void handleFlyCompleted(AnimationStatus status) {
+      if (status != AnimationStatus.completed || _resolvingTurn == null) {
+        return;
+      }
+
+      _completedFlyAnimations += 1;
+      if (_completedFlyAnimations == 3) {
+        _isFlyPhaseActive = false;
+        final PendingTurn completedTurn = _resolvingTurn!;
+        _resolvingTurn = null;
+        _clearAnimationState();
+        _applyResolvedTurn(completedTurn);
+      }
+    }
+
+    _topFlyController.addStatusListener(handleFlyCompleted);
+    _midFlyController.addStatusListener(handleFlyCompleted);
+    _bottomFlyController.addStatusListener(handleFlyCompleted);
   }
 
   @override
   void dispose() {
-    _stackController.dispose();
+    _middleStackController.dispose();
+    _bottomStackController.dispose();
+    _topFlyController.dispose();
+    _midFlyController.dispose();
+    _bottomFlyController.dispose();
     super.dispose();
   }
 
@@ -349,58 +441,62 @@ class _LevelPageFormatState extends State<LevelPageFormat>
         bottomTarget.dy - bottomPos.dy,
       );
 
-      // First phase: middle tile stacks under the winner.
-      _midTween = Tween<Offset>(begin: Offset.zero, end: middleDelta).animate(
+      // Build the tweens for the three separate animation phases.
+      //
+      // Because each phase has its own controller, we no longer need Intervals
+      // to chop up one big timeline.
+      _middleStackTween = Tween<Offset>(
+        begin: Offset.zero,
+        end: middleDelta,
+      ).animate(
         CurvedAnimation(
-          parent: _stackController,
-          curve: const Interval(0.0, 0.55, curve: Curves.easeInOut),
+          parent: _middleStackController,
+          curve: Curves.easeInOut,
         ),
       );
 
-      // First phase: bottom tile stacks slightly after the middle tile so the
-      // assembly reads clearly instead of both lower tiles moving together.
-      _bottomTween = Tween<Offset>(begin: Offset.zero, end: bottomDelta)
-          .animate(
-            CurvedAnimation(
-              parent: _stackController,
-              curve: const Interval(0.25, 0.8, curve: Curves.easeInOut),
-            ),
-          );
+      _bottomStackTween = Tween<Offset>(
+        begin: Offset.zero,
+        end: bottomDelta,
+      ).animate(
+        CurvedAnimation(
+          parent: _bottomStackController,
+          curve: Curves.easeInOut,
+        ),
+      );
 
-      // Second phase: once the stack is formed, the winner flies upward toward
-      // the goal chip. Because its stack position equals its board position,
-      // this fly tween starts from Offset.zero.
+      // Because the top tile never moved during the stack phases, its fly tween
+      // starts from zero offset.
       _topFlyTween = Tween<Offset>(begin: Offset.zero, end: topFlyDelta)
           .animate(
             CurvedAnimation(
-              parent: _stackController,
-              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+              parent: _topFlyController,
+              curve: Curves.easeInOut,
             ),
           );
 
-      // Second phase: the middle tile starts flying from its already-stacked
-      // offset [middleDelta] and keeps that same 18 px spacing below the top
-      // tile all the way to the goal.
+      // The middle tile begins the fly phase from its already-finished stacked
+      // offset instead of from zero.
       _midFlyTween =
           Tween<Offset>(
             begin: middleDelta,
             end: middleDelta + middleFlyDelta,
           ).animate(
             CurvedAnimation(
-              parent: _stackController,
-              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+              parent: _midFlyController,
+              curve: Curves.easeInOut,
             ),
           );
 
-      // Second phase: same idea for the bottom tile, but 36 px below the top.
+      // Same idea for the bottom tile.
       _bottomFlyTween =
           Tween<Offset>(
             begin: bottomDelta,
             end: bottomDelta + bottomFlyDelta,
           ).animate(
             CurvedAnimation(
-              parent: _stackController,
-              curve: const Interval(0.8, 1.0, curve: Curves.easeInOut),
+              parent: _bottomFlyController,
+              curve: Curves.easeInOut,
             ),
           );
 
@@ -411,9 +507,20 @@ class _LevelPageFormatState extends State<LevelPageFormat>
         _isResolvingTurn = true;
       });
 
-      // Start the controller only after every tween has been created. That way
-      // the first animation tick always has valid values for every tile.
-      _stackController.forward(from: 0);
+      // Reset every controller so the phase chain always starts cleanly.
+      _isMiddleStackPhaseActive = false;
+      _isBottomStackPhaseActive = false;
+      _isFlyPhaseActive = false;
+      _middleStackController.reset();
+      _bottomStackController.reset();
+      _topFlyController.reset();
+      _midFlyController.reset();
+      _bottomFlyController.reset();
+
+      // Kick off only the first phase. The later phases begin from their
+      // status listeners when the previous controller reports completion.
+      _isMiddleStackPhaseActive = true;
+      _middleStackController.forward(from: 0);
     }
   }
 

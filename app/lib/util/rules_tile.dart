@@ -57,6 +57,8 @@ class RulesTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final double maxDialogHeight = MediaQuery.sizeOf(context).height * 0.8;
+
     return Material(
       color: Colors.black.withAlpha(90),
       child: SafeArea(
@@ -65,13 +67,13 @@ class RulesTile extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(28, 22, 28, 30),
+              constraints: BoxConstraints(maxHeight: maxDialogHeight),
+              padding: const EdgeInsets.fromLTRB(28, 16, 28, 26),
               decoration: BoxDecoration(
                 color: const Color(0xFF86858F),
                 borderRadius: BorderRadius.circular(34),
               ),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   Align(
                     alignment: Alignment.topRight,
@@ -87,7 +89,7 @@ class RulesTile extends StatelessWidget {
                       constraints: const BoxConstraints(),
                     ),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 2),
                   const Text(
                     'Rules',
                     style: TextStyle(
@@ -96,42 +98,53 @@ class RulesTile extends StatelessWidget {
                       color: Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 26),
-                  ...List<Widget>.generate(rules.length, (int index) {
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 22),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          SizedBox(
-                            width: 32,
-                            child: Text(
-                              '${index + 1}.',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                height: 1.45,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
-                              ),
+                  const SizedBox(height: 20),
+                  // The rule list is the part most likely to overflow on
+                  // shorter screens, so only that section becomes scrollable.
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: List<Widget>.generate(rules.length, (
+                          int index,
+                        ) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 22),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                SizedBox(
+                                  width: 32,
+                                  child: Text(
+                                    '${index + 1}.',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      height: 1.45,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    rules[index],
+                                    textAlign: TextAlign.left,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      height: 1.45,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              rules[index],
-                              textAlign: TextAlign.left,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                height: 1.45,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ],
+                          );
+                        }),
                       ),
-                    );
-                  }),
+                    ),
+                  ),
                 ],
               ),
             ),
