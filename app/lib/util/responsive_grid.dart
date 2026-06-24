@@ -16,11 +16,28 @@ class ResponsiveGrid extends StatelessWidget {
     required this.isResolvingTurn,
     required this.onTileTap,
     required this.tileKeys,
+    required this.animatingTiles,
+    required this.topOffset,
+    required this.midOffset,
+    required this.bottomOffset,
+    required this.topAnimatingId,
+    required this.midAnimatingId,
+    required this.bottomAnimatingId,
   });
 
   final GameViewState gameState;
   final bool isResolvingTurn;
   final Map<String, GlobalKey> tileKeys;
+
+  final Set<String> animatingTiles;
+
+  final Offset topOffset;
+  final Offset midOffset;
+  final Offset bottomOffset;
+
+  final String? topAnimatingId;
+  final String? midAnimatingId;
+  final String? bottomAnimatingId;
 
   /// Called with (col, row) when the player taps an interactive tile.
   final void Function(int col, int row) onTileTap;
@@ -96,12 +113,27 @@ class ResponsiveGrid extends StatelessWidget {
     final bool isInteractive =
         visualState == TileVisualState.bright && !isResolvingTurn;
 
-    return GridTile(
+    Widget tile = GridTile(
       key: tileKeys['$col-$row'],
       color: color,
       tileSize: tileSize,
       visualState: visualState,
       onTap: isInteractive ? () => onTileTap(col, row) : null,
     );
+
+    final String id = '$col-$row';
+    if (id == topAnimatingId) {
+      return Transform.translate(offset: topOffset, child: tile);
+    }
+
+    if (id == midAnimatingId) {
+      return Transform.translate(offset: midOffset, child: tile);
+    }
+
+    if (id == bottomAnimatingId) {
+      return Transform.translate(offset: bottomOffset, child: tile);
+    }
+
+    return tile;
   }
 }

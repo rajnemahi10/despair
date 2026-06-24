@@ -5,6 +5,7 @@ import 'package:app/util/responsive_grid.dart';
 import 'package:app/util/status_text.dart';
 import 'package:app/util/rules_tile.dart';
 import 'package:app/util/settings_tile.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide GridTile;
 
 /// Main in-game level screen for the current Despair prototype.
@@ -37,7 +38,28 @@ class LevelPageFormat extends StatefulWidget {
   State<LevelPageFormat> createState() => _LevelPageFormatState();
 }
 
-class _LevelPageFormatState extends State<LevelPageFormat> {
+class _LevelPageFormatState extends State<LevelPageFormat>
+    with SingleTickerProviderStateMixin {
+  Set<String> animatingTiles = {};
+
+  Offset topOffset = Offset.zero;
+  Offset midOffset = Offset.zero;
+  Offset bottomOffset = Offset.zero;
+
+  late final AnimationController _stackController;
+  late Animation<Offset> _midTween;
+  late Animation<Offset> _bottomTween;
+
+  String? topAnimatingId;
+  String? midAnimatingId;
+  String? bottomAnimatingId;
+
+  Offset getPosition(GlobalKey key) {
+    final RenderBox box = key.currentContext!.findRenderObject() as RenderBox;
+    final Size size = box.size;
+    return box.localToGlobal(Offset(size.width / 2, size.height / 2));
+  }
+
   final Map<String, GlobalKey> goalKeys = {
     'red': GlobalKey(),
     'blue': GlobalKey(),
@@ -67,6 +89,24 @@ class _LevelPageFormatState extends State<LevelPageFormat> {
       status: GameStatus.playing,
       winnerColor: null,
     );
+
+    _stackController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    );
+
+    _stackController.addListener(() {
+      setState(() {
+        midOffset = _midTween.value;
+        bottomOffset = _bottomTween.value;
+      });
+    });
+
+    @override
+    void dispose() {
+      _stackController.dispose();
+      super.dispose();
+    }
   }
 
   /// Resolves a completed turn and updates game state immediately.
@@ -112,8 +152,73 @@ class _LevelPageFormatState extends State<LevelPageFormat> {
     });
 
     if (nextPendingTurn.picks.length == kGameColors.length) {
-      setState(() => _isResolvingTurn = true);
-      _applyResolvedTurn(nextPendingTurn);
+      final picks = nextPendingTurn.picks;
+
+      topAnimatingId = tileId(picks[0].col, picks[0].row);
+
+      midAnimatingId = tileId(picks[1].col, picks[1].row);
+
+      bottomAnimatingId = tileId(picks[2].col, picks[2].row);
+
+      animatingTiles = {topAnimatingId!, midAnimatingId!, bottomAnimatingId!};
+
+      setState(() {
+        topOffset = Offset.zero;
+        midOffset = const Offset(0, 20);
+        bottomOffset = const Offset(0, 40);
+        _isResolvingTurn = true;
+        _stackController.forward(from: 0);
+      });
+
+      final GlobalKey topKey = tileKeys[tileId(picks[0].col, picks[0].row)]!;
+
+      final GlobalKey midKey = tileKeys[tileId(picks[1].col, picks[1].row)]!;
+
+      final GlobalKey bottomKey = tileKeys[tileId(picks[2].col, picks[2].row)]!;
+
+      final String winnerColor = resolveWinnerColor(
+        _gameState.board,
+        nextPendingTurn,
+      );
+
+      final GlobalKey goalKey = goalKeys[winnerColor]!;
+
+      final Offset topPos = getPosition(topKey);
+      final Offset midPos = getPosition(midKey);
+      final Offset bottomPos = getPosition(bottomKey);
+      final Offset goalPos = getPosition(goalKey);
+
+      const double stackPeek = 18;
+      final Offset middleTarget = Offset(topPos.dx, topPos.dy + stackPeek);
+      final Offset bottomTarget = Offset(
+        topPos.dx,
+        topPos.dy + (stackPeek * 2),
+      );
+
+      final Offset middleDelta = Offset(
+        middleTarget.dx - midPos.dx,
+        middleTarget.dy - midPos.dy,
+      );
+
+      final Offset bottomDelta = Offset(
+        bottomTarget.dx - bottomPos.dx,
+        bottomTarget.dy - bottomPos.dy,
+      );
+
+      _midTween = Tween<Offset>(begin: Offset.zero, end: middleDelta).animate(
+        CurvedAnimation(
+          parent: _stackController,
+          curve: const Interval(0.0, 0.55, curve: Curves.easeInOut),
+        ),
+      );
+
+      _bottomTween = Tween<Offset>(begin: Offset.zero, end: bottomDelta)
+          .animate(
+            CurvedAnimation(
+              parent: _stackController,
+              curve: const Interval(0.25, 0.8, curve: Curves.easeInOut),
+            ),
+          );
     }
   }
 
@@ -179,6 +284,13 @@ class _LevelPageFormatState extends State<LevelPageFormat> {
                     isResolvingTurn: _isResolvingTurn,
                     onTileTap: _onTileTap,
                     tileKeys: tileKeys,
+                    animatingTiles: animatingTiles,
+                    topOffset: topOffset,
+                    midOffset: midOffset,
+                    bottomOffset: bottomOffset,
+                    topAnimatingId: topAnimatingId,
+                    midAnimatingId: midAnimatingId,
+                    bottomAnimatingId: bottomAnimatingId,
                   ),
                 ),
               ),
